@@ -1,0 +1,13 @@
+{
+  "name": "start-demo",
+  "version": "1.0.0",
+  "description": "Creates the users to use for the demo and begins sending the requests",
+  "main": "index.js",
+  "author": "Momento, Inc",
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.267.0",
+    "@aws-sdk/client-eventbridge": "^3.267.0",
+    "@aws-sdk/util-dynamodb": "^3.267.0",
+    "@faker-js/faker": "^7.6.0"
+  }
+}

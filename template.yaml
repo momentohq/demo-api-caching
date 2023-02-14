@@ -1,0 +1,294 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Demo that shows the difference in latency for endpoints using Momento as a read-aside cache
+
+Parameters:
+  TableName:
+    Type: String
+    Default: demo-api-caching
+  MomentoAuthToken:
+    Type: String
+    Description: Auth token used to initialize the Momento SimpleCacheClient
+    
+Globals:
+  Function:
+    Runtime: nodejs18.x
+    Architectures:
+      - arm64
+    Tracing: Active
+    Timeout: 15
+    MemorySize: 1664
+    Handler: index.handler
+    Layers:
+      - !Ref SharedLayer
+    Environment:
+      Variables:
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+
+Resources:
+  DemoTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PAY_PER_REQUEST      
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+
+  DemoApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      TracingEnabled: true
+      StageName: demo
+      MethodSettings:
+        - MetricsEnabled: True
+          ResourcePath: '/*'
+          HttpMethod: '*'
+          LoggingLevel: ERROR
+          DataTraceEnabled: True
+      DefinitionBody:
+        Fn::Transform:
+          Name: AWS::Include
+          Parameters:
+            Location: ./openapi.yaml
+
+  SharedLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: nodejs18.x
+      BuildArchitecture: arm64
+    Properties:
+      ContentUri: layers/
+      CompatibleRuntimes:
+        - nodejs18.x
+
+  StartDemoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/start-demo
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+              Resource: !GetAtt DemoTable.Arn
+            - Effect: Allow
+              Action:
+                - events:PutEvents
+              Resource: 
+                - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+      Events:
+        StartDemoEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DemoApi
+            Path: /start-demo
+            Method: POST
+
+  TriggerSimulatedLoadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/trigger-simulated-load
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt RequestQueue.Arn
+      Environment:
+        Variables:
+          BASE_URL: !Sub https://${DemoApi}.execute-api.${AWS::Region}.amazonaws.com/demo
+          QUEUE_URL: !Ref RequestQueue
+      Events:
+        SeedCompletedEvent:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              detail-type:
+                - Seed Completed
+            DeadLetterConfig:
+              Arn: !GetAtt TriggerDLQ.Arn
+
+  TriggerDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 16
+
+  RequestQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 16
+      
+  SendRequestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/send-request
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt RequestQueue.Arn
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RequestQueue.Arn
+            BatchSize: 10
+
+  GetFollowersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/get-followers
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: '*'
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+          USE_CACHE: 'false'
+          METRIC_NAME: followers
+      Events:
+        FollowersEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DemoApi
+            Path: /users/{userId}/followers
+            Method: GET
+
+  GetCachedFollowersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/get-followers
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref MomentoSecret
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: '*'
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+          USE_CACHE: 'true'
+          METRIC_NAME: cached-followers
+          SECRET_ID: !Ref MomentoSecret
+      Events:
+        CachedFollowersEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DemoApi
+            Path: /users/{userId}/cached-followers
+            Method: GET
+
+  GetCachedUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/get-user
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref MomentoSecret
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: '*'
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+          USE_CACHE: 'true'
+          METRIC_NAME: cached-user
+          SECRET_ID: !Ref MomentoSecret
+      Events:
+        GetCachedUserEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DemoApi
+            Path: /cached-users/{userId}
+            Method: GET
+
+  GetUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/get-user
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: '*'
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+          USE_CACHE: 'false'
+          METRIC_NAME: user
+      Events:
+        GetUserEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DemoApi
+            Path: /users/{userId}
+            Method: GET
+
+  MomentoSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      SecretString:
+        Fn::Sub:
+          - |-
+            {
+              "momento": "${MomentoAuthToken}"              
+            }
+          - MomentoAuthToken: !Ref MomentoAuthToken

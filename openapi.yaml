@@ -1,0 +1,202 @@
+openapi: 3.0.0
+info:
+  title: API Caching Demo
+  description: |
+    Endpoints to illustrate the latency difference when using Momento as a read-aside cace
+  version: 1.0.0
+
+x-amazon-apigateway-request-validators:
+  Validate All:
+    validateRequestParameters: true
+    validateRequestBody: true
+x-amazon-apigateway-gateway-responses:
+  BAD_REQUEST_BODY:
+    statusCode: 400
+    responseTemplates:
+      application/json: '{ "message": "$context.error.validationErrorString" }'    
+
+paths:
+  /start-demo:
+    post:
+      summary: Starts the demo from the beginning
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - userCount
+                - requestCount
+              properties:
+                userCount:
+                  type: integer
+                  description: Number of users to seed to the demo
+                  minimum: 50
+                  maximum: 5000
+                requestCount:
+                  type: integer
+                  description: Number of requests to simulate load
+                  minimum: 500
+                  maximum: 10000                
+      responses:
+        202:
+          $ref: '#/components/responses/Accepted'
+        404:
+          $ref: '#/components/responses/NotFound'
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-request-validator: Validate All
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StartDemoFunction.Arn}/invocations
+        httpMethod: POST
+        type: aws_proxy
+
+  /users/{userId}/followers:
+    get:
+      summary: Get a list of followers for a specific user
+      responses:
+        200:
+          description: A list of followers is returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/followers'
+        404:
+          $ref: '#/components/responses/NotFound'
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-request-validator: Validate All
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetFollowersFunction.Arn}/invocations
+        httpMethod: POST
+        type: aws_proxy
+
+  /users/{userId}/cached-followers:
+    get:
+      summary: Get a list of cached followers for a specific user
+      responses:
+        200:
+          description: A list of followers is returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/followers'
+        404:
+          $ref: '#/components/responses/NotFound'
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-request-validator: Validate All
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetCachedFollowersFunction.Arn}/invocations
+        httpMethod: POST
+        type: aws_proxy
+
+  /users/{userId}:
+    get:
+      summary: Gets the detail of a specific user
+      responses:
+        200:
+          description: The user information is returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/user'
+        404:
+          $ref: '#/components/responses/NotFound'
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-request-validator: Validate All
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetUserFunction.Arn}/invocations
+        httpMethod: POST
+        type: aws_proxy
+
+  /cached-users/{userId}:
+    get:
+      summary: Gets the detail of a specific user from Momento 
+      responses:
+        200:
+          description: The user information is returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/user'
+        404:
+          $ref: '#/components/responses/NotFound'
+        500:
+          $ref: '#/components/responses/UnknownError'
+      x-amazon-apigateway-request-validator: Validate All
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetCachedUserFunction.Arn}/invocations
+        httpMethod: POST
+        type: aws_proxy
+
+components:
+  schemas:
+    followers:
+      description: List of followers
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          id:
+            type: integer
+
+    user:
+      description: User detail
+      type: object
+      properties:
+        name:
+          type: string
+        id:
+          type: integer
+        favoriteColor:
+          type: string
+          enum: [red, blue, green, yellow]
+
+  responses:
+    Accepted:
+      description: The demo was successfully triggered
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - message
+            properties:
+              message:
+                type: string
+                example: The demo has begun!
+    NotFound:
+      description: Unable to process request. Likely due to improperly formatted request.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - message
+            properties:
+              message:
+                type: string
+                example: A user with the provided id could not be found
+    UnknownError:
+      description: An unexpected error occurred on the server.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - message
+            properties:
+              message:
+                type: string
+                description: Unknown error message
+                example: An unexpected error occurred.

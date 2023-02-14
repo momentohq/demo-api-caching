@@ -1,0 +1,10 @@
+{
+  "name": "trigger-simulated-load",
+  "version": "1.0.0",
+  "description": "Starts a simulated load for the demo",
+  "main": "index.js",
+  "author": "Momento, Inc",
+  "devDependencies": {
+    "@aws-sdk/client-sqs": "^3.267.0"
+  }
+}
